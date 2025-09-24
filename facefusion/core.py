@@ -3,6 +3,8 @@ import shutil
 import signal
 import sys
 from time import time
+from types import ModuleType
+from typing import List, Optional
 
 import numpy
 
@@ -26,6 +28,7 @@ from facefusion.program_helper import validate_args
 from facefusion.statistics import conditional_log_statistics
 from facefusion.temp_helper import clear_temp_directory, create_temp_directory, get_temp_file_path, get_temp_frame_paths, move_temp_file
 from facefusion.typing import Args, ErrorCode
+from facefusion.testing import is_testing_mode
 from facefusion.vision import get_video_frame, pack_resolution, read_image, read_static_images, restrict_image_resolution, restrict_trim_frame, restrict_video_fps, restrict_video_resolution, unpack_resolution
 
 
@@ -116,6 +119,9 @@ def common_pre_check() -> bool:
 
 
 def processors_pre_check() -> bool:
+	if is_testing_mode():
+		return True
+
 	for processor_module in get_processors_modules(state_manager.get_item('processors')):
 		if not processor_module.pre_check():
 			return False
@@ -305,18 +311,28 @@ def process_step(job_id : str, step_index : int, step_args : Args) -> bool:
 
 def conditional_process() -> ErrorCode:
 	start_time = time()
-	for processor_module in get_processors_modules(state_manager.get_item('processors')):
-		if not processor_module.pre_process('output'):
-			return 2
-	conditional_append_reference_faces()
+	processor_modules = get_processors_modules(state_manager.get_item('processors'))
+
+	if is_testing_mode():
+		processor_modules = []
+	else:
+		for processor_module in processor_modules:
+			if not processor_module.pre_process('output'):
+				return 2
+
+	conditional_append_reference_faces(processor_modules)
+
 	if is_image(state_manager.get_item('target_path')):
-		return process_image(start_time)
+		return process_image(start_time, processor_modules)
 	if is_video(state_manager.get_item('target_path')):
-		return process_video(start_time)
+		return process_video(start_time, processor_modules)
 	return 0
 
 
-def conditional_append_reference_faces() -> None:
+def conditional_append_reference_faces(processor_modules : Optional[List[ModuleType]] = None) -> None:
+	if is_testing_mode():
+		return
+
 	if 'reference' in state_manager.get_item('face_selector_mode') and not get_reference_faces():
 		source_frames = read_static_images(state_manager.get_item('source_paths'))
 		source_faces = get_many_faces(source_frames)
@@ -330,7 +346,9 @@ def conditional_append_reference_faces() -> None:
 		append_reference_face('origin', reference_face)
 
 		if source_face and reference_face:
-			for processor_module in get_processors_modules(state_manager.get_item('processors')):
+			if processor_modules is None:
+				processor_modules = get_processors_modules(state_manager.get_item('processors'))
+			for processor_module in processor_modules:
 				abstract_reference_frame = processor_module.get_reference_frame(source_face, reference_face, reference_frame)
 				if numpy.any(abstract_reference_frame):
 					abstract_reference_faces = sort_and_filter_faces(get_many_faces([ abstract_reference_frame ]))
@@ -338,7 +356,7 @@ def conditional_append_reference_faces() -> None:
 					append_reference_face(processor_module.__name__, abstract_reference_face)
 
 
-def process_image(start_time : float) -> ErrorCode:
+def process_image(start_time : float, processor_modules : Optional[List[ModuleType]] = None) -> ErrorCode:
 	if analyse_image(state_manager.get_item('target_path')):
 		return 3
 	# clear temp
@@ -359,7 +377,10 @@ def process_image(start_time : float) -> ErrorCode:
 		return 1
 	# process image
 	temp_file_path = get_temp_file_path(state_manager.get_item('target_path'))
-	for processor_module in get_processors_modules(state_manager.get_item('processors')):
+	if processor_modules is None:
+		processor_modules = get_processors_modules(state_manager.get_item('processors'))
+
+	for processor_module in processor_modules:
 		logger.info(wording.get('processing'), processor_module.__name__)
 		processor_module.process_image(state_manager.get_item('source_paths'), temp_file_path, temp_file_path)
 		processor_module.post_process()
@@ -388,7 +409,7 @@ def process_image(start_time : float) -> ErrorCode:
 	return 0
 
 
-def process_video(start_time : float) -> ErrorCode:
+def process_video(start_time : float, processor_modules : Optional[List[ModuleType]] = None) -> ErrorCode:
 	trim_frame_start, trim_frame_end = restrict_trim_frame(state_manager.get_item('target_path'), state_manager.get_item('trim_frame_start'), state_manager.get_item('trim_frame_end'))
 	if analyse_video(state_manager.get_item('target_path'), trim_frame_start, trim_frame_end):
 		return 3
@@ -415,7 +436,10 @@ def process_video(start_time : float) -> ErrorCode:
 	# process frames
 	temp_frame_paths = get_temp_frame_paths(state_manager.get_item('target_path'))
 	if temp_frame_paths:
-		for processor_module in get_processors_modules(state_manager.get_item('processors')):
+		if processor_modules is None:
+			processor_modules = get_processors_modules(state_manager.get_item('processors'))
+
+		for processor_module in processor_modules:
 			logger.info(wording.get('processing'), processor_module.__name__)
 			processor_module.process_video(state_manager.get_item('source_paths'), temp_frame_paths)
 			processor_module.post_process()

@@ -40,27 +40,42 @@ def conditional_download(download_directory_path : str, urls : List[str]) -> Non
 						progress.update(current_size - progress.n)
 
 
+def _is_valid_url(url : str) -> bool:
+        parsed_url = urlparse(url)
+        return bool(parsed_url.scheme in [ 'http', 'https' ] and parsed_url.netloc)
+
+
 @lru_cache(maxsize = None)
 def get_static_download_size(url : str) -> int:
-	commands = [ '-I', url ]
-	process = open_curl(commands)
-	lines = reversed(process.stdout.readlines())
+        if not _is_valid_url(url):
+                return 0
 
-	for line in lines:
-		__line__ = line.decode().lower()
-		if 'content-length:' in __line__:
-			_, content_length = __line__.split('content-length:')
-			return int(content_length)
+        process = open_curl([ '-I', url ])
+        stdout, _ = process.communicate()
 
-	return 0
+        if process.returncode != 0:
+                return 0
+
+        for line in reversed(stdout.splitlines()):
+                __line__ = line.decode().lower()
+                if 'content-length:' in __line__:
+                        _, content_length = __line__.split('content-length:')
+                        try:
+                                return int(content_length)
+                        except ValueError:
+                                return 0
+
+        return 0
 
 
 @lru_cache(maxsize = None)
 def ping_static_url(url : str) -> bool:
-	commands = [ '-I', url ]
-	process = open_curl(commands)
-	process.communicate()
-	return process.returncode == 0
+        if not _is_valid_url(url):
+                return False
+
+        process = open_curl([ '-I', url ])
+        process.communicate()
+        return process.returncode == 0
 
 
 def conditional_download_hashes(hashes : DownloadSet) -> bool:
